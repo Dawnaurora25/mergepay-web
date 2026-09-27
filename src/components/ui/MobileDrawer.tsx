@@ -11,6 +11,7 @@ import {
   nextFocusIndex,
   shouldCloseOnEscape,
 } from "@/lib/dialog";
+import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
 export interface MobileDrawerProps {
   open: boolean;
@@ -120,17 +121,9 @@ export function MobileDrawer({
     };
   }, [open, onClose, dismissible, getContentFocusable, getAllFocusable, drawerId]);
 
-  // Prevent body scroll when drawer is open
-  useEffect(() => {
-    if (open) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [open]);
+  // Prevent body scroll when drawer is open. Reference-counted, so a dialog
+  // opened on top of the drawer cannot prematurely release the lock.
+  useBodyScrollLock(open);
 
   const slideVariants = {
     bottom: {

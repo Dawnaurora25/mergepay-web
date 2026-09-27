@@ -12,6 +12,7 @@ import {
   nextFocusIndex,
   shouldCloseOnEscape,
 } from "@/lib/dialog";
+import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
 export interface DialogProps {
   open: boolean;
@@ -39,6 +40,11 @@ export function Dialog({
 
   const titleId = useId();
   const descriptionId = useId();
+
+  // Stop the page behind the dialog from scrolling while it is open. Every
+  // dialog goes through this primitive, so the behaviour is consistent and
+  // reference-counted across stacked dialogs.
+  useBodyScrollLock(open);
 
   // Get focusable elements inside the dialog content (excluding title bar)
   const getFocusable = useCallback(() => {

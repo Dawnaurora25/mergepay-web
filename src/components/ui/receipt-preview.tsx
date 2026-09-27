@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Download, ExternalLink, Maximize2, X } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useBodyScrollLock } from "@/lib/useBodyScrollLock";
 
 /**
  * Neobrutalist lightbox for viewing an attached receipt.
@@ -28,12 +29,14 @@ export function ReceiptPreview({
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
-  // Escape + vertical overflow guard while open.
+  // Stop the page behind the lightbox from scrolling while it is open.
+  // Reference-counted, so a dialog opened over the lightbox stays consistent.
+  useBodyScrollLock(open);
+
+  // Escape + focus restore while open.
   useEffect(() => {
     if (!open) return;
 
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     const previousFocus =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -65,7 +68,6 @@ export function ReceiptPreview({
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = previousOverflow;
       previousFocus?.focus();
     };
   }, [open]);

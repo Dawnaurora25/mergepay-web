@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { Dialog } from "../../components/ui/dialog";
 import { MobileDrawer } from "../../components/ui/MobileDrawer";
 import { dialogStack, shouldCloseOnEscape } from "../../lib/dialog";
+import { resetBodyScrollLock } from "../../lib/scrollLock";
 
 describe("Dialog Accessibility & Focus Trapping", () => {
   beforeEach(() => {
@@ -268,5 +269,103 @@ describe("Dialog Stack Management", () => {
     expect(shouldCloseOnEscape({ key: "Escape", dismissible: false, isTopmost: true })).toBe(false);
     expect(shouldCloseOnEscape({ key: "Escape", dismissible: true, isTopmost: false })).toBe(false);
     expect(shouldCloseOnEscape({ key: "Tab", dismissible: true, isTopmost: true })).toBe(false);
+  });
+});
+
+describe("Overlay body scroll lock", () => {
+  beforeEach(() => {
+    dialogStack.clear();
+  });
+
+  afterEach(() => {
+    dialogStack.clear();
+    resetBodyScrollLock();
+  });
+
+  it("locks body scroll while a Dialog is open and restores it on unmount", () => {
+    const { unmount } = render(
+      <Dialog open onClose={() => {}} title="Scroll Lock">
+        <button>Inside</button>
+      </Dialog>
+    );
+
+    expect(document.body.style.overflow).toBe("hidden");
+
+    unmount();
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  it("locks body scroll while a MobileDrawer is open and restores it on unmount", () => {
+    const { unmount } = render(
+      <MobileDrawer open onClose={() => {}} title="Scroll Lock">
+        <button>Inside</button>
+      </MobileDrawer>
+    );
+
+    expect(document.body.style.overflow).toBe("hidden");
+
+    unmount();
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  it("stays locked while a dialog is stacked over a drawer", () => {
+    const drawer = render(
+      <MobileDrawer open onClose={() => {}} title="Drawer">
+        <button>Drawer body</button>
+      </MobileDrawer>
+    );
+    const dialog = render(
+      <Dialog open onClose={() => {}} title="Dialog">
+        <button>Dialog body</button>
+      </Dialog>
+    );
+
+    // Closing the drawer first must not release the dialog's lock.
+    drawer.unmount();
+    expect(document.body.style.overflow).toBe("hidden");
+
+    dialog.unmount();
+    expect(document.body.style.overflow).toBe("");
+  });
+});
+
+describe("Dialog focus trapping", () => {
+  beforeEach(() => {
+    dialogStack.clear();
+  });
+
+  afterEach(() => {
+    dialogStack.clear();
+  });
+
+  it("wraps Tab from the last control back to the first", () => {
+    render(
+      <Dialog open onClose={() => {}} title="Trap Test">
+        <button data-testid="first">First</button>
+        <button data-testid="last">Last</button>
+      </Dialog>
+    );
+
+    const last = screen.getByTestId("last");
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+
+    // Focusable order is the close button, then the body controls.
+    expect(document.activeElement).toBe(screen.getByLabelText("Close Trap Test"));
+  });
+
+  it("wraps Shift+Tab from the first control back to the last", () => {
+    render(
+      <Dialog open onClose={() => {}} title="Trap Test">
+        <button data-testid="first">First</button>
+        <button data-testid="last">Last</button>
+      </Dialog>
+    );
+
+    const close = screen.getByLabelText("Close Trap Test");
+    close.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+
+    expect(document.activeElement).toBe(screen.getByTestId("last"));
   });
 });
