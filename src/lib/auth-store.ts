@@ -37,7 +37,7 @@ export const useAuth = create<AuthState>()(
       restoreStatus: "idle",
       sessionExpired: false,
       setSession: (token: string, user: User) => {
-        // memoryToken = token;
+        memoryToken = token;
         set({
           token,
           user,
@@ -47,7 +47,7 @@ export const useAuth = create<AuthState>()(
         });
       },
       clear: () => {
-        // memoryToken = null;
+        memoryToken = null;
         set({
           token: null,
           user: null,
@@ -56,7 +56,7 @@ export const useAuth = create<AuthState>()(
         });
       },
       forgetWallet: () => {
-        // memoryToken = null;
+        memoryToken = null;
         set({
           token: null,
           user: null,
@@ -93,7 +93,6 @@ export const useAuth = create<AuthState>()(
         return storage;
       }),
       partialize: (state) => ({
-        token: state.token,
         user: state.user,
         lastAuthenticatedAt: state.lastAuthenticatedAt,
       }),
@@ -116,7 +115,7 @@ export const useAuth = create<AuthState>()(
 );
 
 export function getToken(): string | null {
-  return useAuth.getState().token;
+  return memoryToken;
 }
 
 export function getPersistedSession(): PersistedSession | null {
