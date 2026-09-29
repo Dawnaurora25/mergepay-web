@@ -20,6 +20,7 @@ import { GroupBudgetTracker } from "@/components/GroupBudgetTracker";
 import { ExportGroupStatementButton } from "@/components/ExportGroupStatementButton";
 import { GroupExportMenu } from "@/components/groups/GroupExportMenu";
 import { TreasuryView } from "@/components/treasury/TreasuryView";
+import { MultiPayerOverview } from "@/components/groups/MultiPayerOverview";
 import { ExpenseListFilters, type ExpenseFilterState } from "@/components/expenses/expense-list-filters";
 import { filterExpenses } from "@/lib/expenseFilters";
 import { ListSkeleton, GroupHeaderSkeleton, SkeletonBoundary } from "@/components/ui/skeleton";
@@ -92,7 +93,7 @@ export default function GroupDetailPage() {
             <Button variant="outline" onClick={() => setInviteOpen(true)}>
               <Users className="h-4 w-4 mr-1" /> Invite
             </Button>
-            <Button onClick={() => setAddExpenseOpen(true)}>
+            <Button onClick={() => setAddExpenseOpen(true)} data-testid="group-add-expense">
               <Plus className="h-4 w-4 mr-1" /> Add Expense
             </Button>
           </div>
@@ -104,7 +105,7 @@ export default function GroupDetailPage() {
             skeleton={<GroupHeaderSkeleton />}
           >
             <div className="rounded-2xl border-3 border-ink bg-paper p-6 shadow-brutal">
-              <h1 className="font-display text-2xl uppercase tracking-tight">
+              <h1 className="font-display text-2xl uppercase tracking-tight" data-testid="group-title">
                 {group?.name ?? "Group"}
               </h1>
               {group?.description && (
@@ -210,6 +211,7 @@ export default function GroupDetailPage() {
           </div>
 
           <div className="space-y-6">
+            <MultiPayerOverview expenses={expenses} />
             <ErrorBoundary>
               <BalancesPanel
                 groupId={groupId}
