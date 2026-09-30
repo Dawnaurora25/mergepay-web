@@ -16,7 +16,35 @@ import { test, expect, type Page, type Route } from "@playwright/test";
  * runs headless in CI exactly as it does locally.
  */
 
-const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
+/**
+ * The wallet must report the same network this build targets, or
+ * `assertWalletNetwork` refuses the sign-in. The `test:e2e` job runs
+ * `npm run dev` without `NEXT_PUBLIC_STELLAR_NETWORK`, so the app defaults to
+ * mainnet; reading the same variable here keeps the mock and the app in step.
+ */
+const NETWORK_ALIASES: Record<string, "public" | "testnet"> = {
+  public: "public",
+  pubnet: "public",
+  mainnet: "public",
+  testnet: "testnet",
+  test: "testnet",
+};
+
+const NETWORK: "public" | "testnet" =
+  NETWORK_ALIASES[
+    (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "").trim().toLowerCase()
+  ] ?? "public";
+
+const NETWORK_PASSPHRASE =
+  NETWORK === "testnet"
+    ? "Test SDF Network ; September 2015"
+    : "Public Global Stellar Network ; September 2015";
+
+const NETWORK_NAME = NETWORK === "testnet" ? "Testnet" : "Public";
+const NETWORK_URL =
+  NETWORK === "testnet"
+    ? "https://horizon-testnet.stellar.org"
+    : "https://horizon.stellar.org";
 
 // Valid checksummed ed25519 public keys (see src/lib/strkey.ts).
 const CURRENT_USER = {
@@ -136,7 +164,7 @@ const EMPTY_LEDGER = { entries: [], nextCursor: null };
  */
 async function mockFreighter(page: Page): Promise<void> {
   await page.addInitScript(
-    ({ publicKey, networkPassphrase }) => {
+    ({ publicKey, networkPassphrase, network, networkName, networkUrl }) => {
       // freighter-api checks this global first and short-circuits
       // `isConnected()` without a postMessage round-trip.
       (window as unknown as Record<string, unknown>)["freighter"] = true;
@@ -177,9 +205,9 @@ async function mockFreighter(page: Page): Promise<void> {
           case "REQUEST_NETWORK_DETAILS":
             return reply({
               networkDetails: {
-                network: "TESTNET",
-                networkName: "Testnet",
-                networkUrl: "https://horizon-testnet.stellar.org",
+                network,
+                networkName,
+                networkUrl,
                 networkPassphrase,
               },
             });
@@ -198,7 +226,13 @@ async function mockFreighter(page: Page): Promise<void> {
         }
       });
     },
-    { publicKey: CURRENT_USER.stellarPublicKey, networkPassphrase: NETWORK_PASSPHRASE }
+    {
+      publicKey: CURRENT_USER.stellarPublicKey,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      network: NETWORK.toUpperCase(),
+      networkName: NETWORK_NAME,
+      networkUrl: NETWORK_URL,
+    }
   );
 }
 
