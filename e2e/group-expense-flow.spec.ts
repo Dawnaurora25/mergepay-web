@@ -362,10 +362,18 @@ test.describe("Group creation and expense splitting flow", () => {
     await expect(
       page.getByRole("heading", { name: "Net balances", exact: true })
     ).toBeVisible();
-    await expect(page.getByText(CURRENT_USER.displayName).first()).toBeVisible();
-    await expect(page.getByText(PEER_USER.displayName).first()).toBeVisible();
+    // Scoped to the balance rows: a bare text lookup for a member name also
+    // matches the hidden <option> in the member picker.
+    const currentUserRow = page.locator(
+      `[data-testid="balance-row"][data-user-id="${CURRENT_USER.id}"]`
+    );
+    const peerRow = page.locator(
+      `[data-testid="balance-row"][data-user-id="${PEER_USER.id}"]`
+    );
+    await expect(currentUserRow).toContainText(CURRENT_USER.displayName);
+    await expect(peerRow).toContainText(PEER_USER.displayName);
     // Payer is owed 50 XLM; the other member owes 50 XLM.
-    await expect(page.getByText("+50.00 XLM").first()).toBeVisible();
-    await expect(page.getByText("-50.00 XLM").first()).toBeVisible();
+    await expect(currentUserRow).toContainText("+50.00 XLM");
+    await expect(peerRow).toContainText("-50.00 XLM");
   });
 });
