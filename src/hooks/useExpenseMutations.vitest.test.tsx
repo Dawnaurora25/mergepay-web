@@ -75,7 +75,11 @@ describe("useExpenseMutations Hooks (#285)", () => {
   });
 
   it("useSettleBalanceMutation executes createSettlement and triggers toasts", async () => {
-    const mockSettlement = { id: "s1", amount: "10.00" };
+    const mockSettlement = { 
+      settlement: { id: "s1", amount: "10.00", status: "confirmed" },
+      xdr: "AAAA...",
+      networkPassphrase: "Test SDF Network"
+    };
     vi.mocked(api.createSettlement).mockResolvedValue(mockSettlement as any);
 
     const { result } = renderHook(() => useSettleBalanceMutation("g1"), {
@@ -91,7 +95,7 @@ describe("useExpenseMutations Hooks (#285)", () => {
     });
 
     expect(api.createSettlement).toHaveBeenCalledWith("g1", expect.objectContaining({ toUserId: "u2" }));
-    expect(toast.success).toHaveBeenCalledWith("Settlement executed successfully");
+    expect(toast.success).toHaveBeenCalledWith("Settlement confirmed");
   });
 
   it("useSettleBalanceMutation performs optimistic update and rolls back on error with sonner toast", async () => {
@@ -127,7 +131,7 @@ describe("useExpenseMutations Hooks (#285)", () => {
     });
 
     expect(errorThrown).toBeDefined();
-    expect(toast.error).toHaveBeenCalledWith("Settlement failed. Balances rolled back.");
+    expect(toast.error).toHaveBeenCalledWith("Network error");
 
     // Verify balances rolled back to previous state
     const balances: any = qc.getQueryData(qk.balances("g1"));
@@ -291,7 +295,7 @@ describe("optimistic updates (#375)", () => {
     });
 
     await act(async () => {
-      gate.reject(new Error("network down"));
+      gate.reject(new Error("network down settlement test"));
     });
 
     await waitFor(() => {
@@ -300,7 +304,7 @@ describe("optimistic updates (#375)", () => {
       expect(balances?.balances[1].net).toBe("-10");
     });
     expect(toast.error).toHaveBeenCalledWith(
-      "Settlement failed. Balances rolled back."
+      "network down settlement test"
     );
   });
 });
@@ -381,6 +385,99 @@ describe("useCreateExpense — Add Expense dialog path (#488)", () => {
       expect(cache?.expenses[0].id).toBe("exp-1");
       expect(cache?.expenses[0].isOptimistic).toBeUndefined();
     });
+    expect(toast.error).toHaveBeenCalled();
+  });
+});
+
+describe("useCreateExpense — onSuccess toast (#488)", () => {
+  let client: QueryClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuth.setState({ user: ME });
+    client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+  });
+
+  afterEach(() => {
+    useAuth.setState({ user: null });
+    client.clear();
+  });
+
+  it("fires a success toast once the API confirms the new expense", async () => {
+    client.setQueryData(qk.expenses("g1"), SEEDED_EXPENSES);
+    vi.mocked(api.createExpense).mockResolvedValueOnce({
+      id: "server-2",
+      groupId: "g1",
+      payerUserId: "me",
+      payer: ME,
+      title: "Sushi",
+      description: null,
+      amount: "30.0000000",
+      assetCode: "USDC",
+      assetIssuer: null,
+      splitType: "equal",
+      memo: null,
+      receiptUrl: null,
+      createdAt: new Date().toISOString(),
+      shares: [],
+    } as any);
+
+    const { result } = renderHook(() => useCreateExpense("g1"), {
+      wrapper: createWrapper(client),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        title: "Sushi",
+        amount: "30.0000000",
+        assetCode: "USDC",
+        splitType: "equal",
+        shares: [{ userId: "me" }, { userId: "u2" }],
+      });
+    });
+
+    expect(api.createExpense).toHaveBeenCalledWith(
+      "g1",
+      expect.objectContaining({ title: "Sushi" })
+    );
+    expect(toast.success).toHaveBeenCalledWith("Expense added successfully");
+  });
+
+  it("fires an error toast and rolls back the list when the API rejects", async () => {
+    client.setQueryData(qk.expenses("g1"), SEEDED_EXPENSES);
+    vi.mocked(api.createExpense).mockRejectedValueOnce(
+      new Error("upstream unavailable")
+    );
+
+    const { result } = renderHook(() => useCreateExpense("g1"), {
+      wrapper: createWrapper(client),
+    });
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.mutateAsync({
+          title: "Tacos",
+          amount: "12.0000000",
+          assetCode: "USDC",
+          splitType: "equal",
+          shares: [{ userId: "me" }],
+        });
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(caught).toBeDefined();
+
+    await waitFor(() => {
+      const cache = client.getQueryData<ExpensesResponse>(qk.expenses("g1"));
+      expect(cache?.expenses).toHaveLength(1);
+      expect(cache?.expenses[0].id).toBe("exp-1");
+    });
+
     expect(toast.error).toHaveBeenCalled();
   });
 });

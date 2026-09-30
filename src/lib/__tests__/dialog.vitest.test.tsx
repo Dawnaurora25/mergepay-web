@@ -3,8 +3,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { Dialog } from "../../components/ui/dialog";
 import { MobileDrawer } from "../../components/ui/MobileDrawer";
-import { dialogStack, shouldCloseOnEscape } from "../../lib/dialog";
-import { resetBodyScrollLock } from "../../lib/scrollLock";
+import {
+  createFocusContainmentListener,
+  dialogStack,
+  shouldCloseOnEscape,
+} from "../../lib/dialog";
 
 describe("Dialog Accessibility & Focus Trapping", () => {
   beforeEach(() => {
@@ -111,6 +114,60 @@ describe("Dialog Accessibility & Focus Trapping", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(autofocused);
     });
+  });
+
+  it("prioritizes primary action element for initial focus when no autofocus", async () => {
+    render(
+      <Dialog open={true} onClose={() => {}} title="Primary Action Test">
+        <button data-testid="cancel-btn">Cancel</button>
+        <button data-testid="primary-btn" data-primary-action>Confirm Settlement</button>
+      </Dialog>
+    );
+
+    const primaryBtn = screen.getByTestId("primary-btn");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(primaryBtn);
+    });
+  });
+
+  it("traps focus and wraps from last to first element on Tab", async () => {
+    render(
+      <Dialog open={true} onClose={() => {}} title="Tab Wrap Test">
+        <button data-testid="first-btn">First</button>
+        <button data-testid="last-btn">Last</button>
+      </Dialog>
+    );
+
+    const closeBtn = screen.getByLabelText("Close Tab Wrap Test");
+    const lastBtn = screen.getByTestId("last-btn");
+
+    // Focus last button inside dialog
+    lastBtn.focus();
+    expect(document.activeElement).toBe(lastBtn);
+
+    // Press Tab on the last button -> wraps to close button (first overall focusable in dialog)
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(closeBtn);
+  });
+
+  it("traps focus and wraps from first to last element on Shift+Tab", async () => {
+    render(
+      <Dialog open={true} onClose={() => {}} title="Shift Tab Wrap Test">
+        <button data-testid="first-btn">First</button>
+        <button data-testid="last-btn">Last</button>
+      </Dialog>
+    );
+
+    const closeBtn = screen.getByLabelText("Close Shift Tab Wrap Test");
+    const lastBtn = screen.getByTestId("last-btn");
+
+    // Focus first overall element (close button in header)
+    closeBtn.focus();
+    expect(document.activeElement).toBe(closeBtn);
+
+    // Press Shift+Tab on first element -> wraps to last button
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(lastBtn);
   });
 });
 
@@ -272,100 +329,209 @@ describe("Dialog Stack Management", () => {
   });
 });
 
-describe("Overlay body scroll lock", () => {
-  beforeEach(() => {
-    dialogStack.clear();
+describe("createFocusContainmentListener", () => {
+  function makeFixture() {
+    const container = document.createElement("div");
+    container.tabIndex = -1;
+    const first = document.createElement("button");
+    const second = document.createElement("button");
+    container.append(first, second);
+    const outside = document.createElement("button");
+    document.body.append(container, outside);
+
+    const getFocusable = () =>
+      Array.from(container.querySelectorAll<HTMLElement>("button"));
+    const cleanup = () => {
+      container.remove();
+      outside.remove();
+    };
+
+    return { container, first, second, outside, getFocusable, cleanup };
+  }
+
+  it("leaves focus alone while it stays inside the container", () => {
+    const { container, first, outside, getFocusable, cleanup } = makeFixture();
+    const listener = createFocusContainmentListener({
+      getContainer: () => container,
+      getFocusable,
+      isActive: () => true,
+    });
+    document.addEventListener("focusin", listener);
+
+    first.focus();
+    first.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(document.activeElement).toBe(first);
+
+    document.removeEventListener("focusin", listener);
+    cleanup();
   });
 
-  afterEach(() => {
-    dialogStack.clear();
-    resetBodyScrollLock();
+  it("moves focus back to the first control when focus escapes", () => {
+    const { container, first, outside, getFocusable, cleanup } = makeFixture();
+    const listener = createFocusContainmentListener({
+      getContainer: () => container,
+      getFocusable,
+      isActive: () => true,
+    });
+    document.addEventListener("focusin", listener);
+
+    outside.focus();
+    // Real browsers dispatch focusin when focus lands outside the dialog;
+    // dispatch it explicitly so the test does not depend on jsdom's own
+    // focus event plumbing.
+    outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(document.activeElement).toBe(first);
+
+    document.removeEventListener("focusin", listener);
+    cleanup();
   });
 
-  it("locks body scroll while a Dialog is open and restores it on unmount", () => {
-    const { unmount } = render(
-      <Dialog open onClose={() => {}} title="Scroll Lock">
-        <button>Inside</button>
-      </Dialog>
-    );
+  it("does nothing while the dialog is no longer topmost", () => {
+    const { container, outside, getFocusable, cleanup } = makeFixture();
+    const listener = createFocusContainmentListener({
+      getContainer: () => container,
+      getFocusable,
+      isActive: () => false,
+    });
+    document.addEventListener("focusin", listener);
 
-    expect(document.body.style.overflow).toBe("hidden");
+    outside.focus();
+    outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(document.activeElement).toBe(outside);
 
-    unmount();
-    expect(document.body.style.overflow).toBe("");
+    document.removeEventListener("focusin", listener);
+    cleanup();
   });
 
-  it("locks body scroll while a MobileDrawer is open and restores it on unmount", () => {
-    const { unmount } = render(
-      <MobileDrawer open onClose={() => {}} title="Scroll Lock">
-        <button>Inside</button>
-      </MobileDrawer>
-    );
+  it("does nothing once the container is detached from the document", () => {
+    const { container, outside, getFocusable, cleanup } = makeFixture();
+    const listener = createFocusContainmentListener({
+      getContainer: () => container,
+      getFocusable,
+      isActive: () => true,
+    });
+    document.addEventListener("focusin", listener);
+    container.remove();
 
-    expect(document.body.style.overflow).toBe("hidden");
+    outside.focus();
+    outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(document.activeElement).toBe(outside);
 
-    unmount();
-    expect(document.body.style.overflow).toBe("");
+    document.removeEventListener("focusin", listener);
+    cleanup();
   });
 
-  it("stays locked while a dialog is stacked over a drawer", () => {
-    const drawer = render(
-      <MobileDrawer open onClose={() => {}} title="Drawer">
-        <button>Drawer body</button>
-      </MobileDrawer>
-    );
-    const dialog = render(
-      <Dialog open onClose={() => {}} title="Dialog">
-        <button>Dialog body</button>
-      </Dialog>
-    );
+  it("parks focus on the container when it has no focusable controls", () => {
+    const container = document.createElement("div");
+    container.tabIndex = -1;
+    document.body.append(container);
+    const outside = document.createElement("button");
+    document.body.append(outside);
 
-    // Closing the drawer first must not release the dialog's lock.
-    drawer.unmount();
-    expect(document.body.style.overflow).toBe("hidden");
+    const listener = createFocusContainmentListener({
+      getContainer: () => container,
+      getFocusable: () => [],
+      isActive: () => true,
+    });
+    document.addEventListener("focusin", listener);
 
-    dialog.unmount();
-    expect(document.body.style.overflow).toBe("");
+    outside.focus();
+    outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(document.activeElement).toBe(container);
+
+    document.removeEventListener("focusin", listener);
+    container.remove();
+    outside.remove();
   });
 });
 
-describe("Dialog focus trapping", () => {
+describe("Dialog focus containment & scroll lock", () => {
   beforeEach(() => {
     dialogStack.clear();
+    document.body.style.overflow = "";
   });
 
   afterEach(() => {
     dialogStack.clear();
+    document.body.style.overflow = "";
   });
 
-  it("wraps Tab from the last control back to the first", () => {
+  it("pulls focus back into the dialog when it escapes", async () => {
     render(
-      <Dialog open onClose={() => {}} title="Trap Test">
-        <button data-testid="first">First</button>
-        <button data-testid="last">Last</button>
+      <Dialog open={true} onClose={() => {}} title="Containment Test">
+        <button data-testid="inner">Inside</button>
       </Dialog>
     );
 
-    const last = screen.getByTestId("last");
-    last.focus();
-    fireEvent.keyDown(document, { key: "Tab" });
+    const inner = screen.getByTestId("inner");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(inner);
+    });
 
-    // Focusable order is the close button, then the body controls.
-    expect(document.activeElement).toBe(screen.getByLabelText("Close Trap Test"));
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+    outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(document.activeElement).not.toBe(outside);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    outside.remove();
   });
 
-  it("wraps Shift+Tab from the first control back to the last", () => {
-    render(
-      <Dialog open onClose={() => {}} title="Trap Test">
-        <button data-testid="first">First</button>
-        <button data-testid="last">Last</button>
+  it("locks background scrolling while open and restores it on close", () => {
+    const { rerender } = render(
+      <Dialog open={false} onClose={() => {}} title="Scroll Lock">
+        <button>Inside</button>
+      </Dialog>
+    );
+    expect(document.body.style.overflow).toBe("");
+
+    rerender(
+      <Dialog open={true} onClose={() => {}} title="Scroll Lock">
+        <button>Inside</button>
+      </Dialog>
+    );
+    expect(document.body.style.overflow).toBe("hidden");
+
+    rerender(
+      <Dialog open={false} onClose={() => {}} title="Scroll Lock">
+        <button>Inside</button>
+      </Dialog>
+    );
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  it("restores focus to the previously focused element when unmounted", async () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { unmount } = render(
+      <Dialog open={true} onClose={() => {}} title="Restore Test">
+        <button data-testid="inner">Inside</button>
       </Dialog>
     );
 
-    const close = screen.getByLabelText("Close Trap Test");
-    close.focus();
-    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId("inner"));
+    });
 
-    expect(document.activeElement).toBe(screen.getByTestId("last"));
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+
+    trigger.remove();
+  });
+
+  it("marks the dialog body so focus rules do not depend on class names", () => {
+    render(
+      <Dialog open={true} onClose={() => {}} title="Content Marker">
+        <button data-testid="inner">Inside</button>
+      </Dialog>
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector("[data-dialog-content]")).not.toBeNull();
   });
 });

@@ -33,11 +33,21 @@ import { toast } from "sonner";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge, statusTone } from "@/components/ui/badge";
+import {
+  AnchorTransferFields,
+  EMPTY_ANCHOR_TRANSFER_VALUES,
+  type AnchorTransferValues,
+} from "@/components/anchors/AnchorTransferFields";
 import { useAnchorInfo, anchorSupportsAsset, findAnchorForAsset } from "@/lib/anchorInfo";
 import { useAnchorSession } from "@/lib/queries";
 import { api } from "@/lib/api";
 import { signXdr, WalletError } from "@/lib/stellar";
+import {
+  anchorTransferFieldErrors,
+  buildAnchorTransferPayload,
+} from "@/lib/validations/anchor";
 import { SETTLEMENT_ASSETS } from "@/lib/constants";
+import { useAssetStore } from "@/lib/asset-store";
 import { cn } from "@/lib/utils";
 import type { AnchorSession, AnchorSessionKind } from "@/lib/types";
 
@@ -61,7 +71,10 @@ export interface Sep24ModalProps {
   onClose: () => void;
   /** Direction the modal opens on. */
   defaultKind?: AnchorSessionKind;
-  /** Asset the modal opens on (must be one of the settlement assets). */
+  /**
+   * Asset the modal opens on (must be one of the settlement assets).
+   * Omit it to follow the user's persisted XLM/USDC preference (#486).
+   */
   defaultAssetCode?: string;
   /** Called as soon as the server creates the session, so callers can list it. */
   onSessionStarted?: (session: AnchorSession) => void;
@@ -74,15 +87,24 @@ export function Sep24Modal({
   open,
   onClose,
   defaultKind = "deposit",
-  defaultAssetCode = SETTLEMENT_ASSETS[0].code,
+  defaultAssetCode,
   onSessionStarted,
 }: Sep24ModalProps) {
+  // The persisted preference is the default for every caller that does not
+  // pin an asset, so the deposit/withdraw flow opens on the same unit the
+  // rest of the app is showing (#486).
+  const preferredAssetCode = useAssetStore((s) => s.activeAsset.code);
   const [kind, setKind] = useState<AnchorSessionKind>(defaultKind);
-  const [assetCode, setAssetCode] = useState(defaultAssetCode);
+  const [assetCode, setAssetCode] = useState(
+    defaultAssetCode ?? preferredAssetCode
+  );
   const [selectedAnchor, setSelectedAnchor] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [startedSession, setStartedSession] = useState<AnchorSession | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [transfer, setTransfer] = useState<AnchorTransferValues>(
+    EMPTY_ANCHOR_TRANSFER_VALUES
+  );
 
   const { anchors, isLoading, isError, refetch } = useAnchorInfo(assetCode);
   const matchingAnchors = useMemo(
@@ -95,6 +117,24 @@ export function Sep24Modal({
     selectedAnchor
   );
 
+  // Validated with the same schema that guards the API payload, so the
+  // Start button and the request can never disagree about what is valid.
+  const transferErrors = useMemo(
+    () =>
+      anchorTransferFieldErrors({
+        kind,
+        assetCode,
+        anchorName: chosenAnchor?.name ?? "",
+        amount: transfer.amount,
+        destination: transfer.destination,
+        memo: transfer.memo,
+      }),
+    [kind, assetCode, chosenAnchor, transfer]
+  );
+  const transferInvalid = Boolean(
+    transferErrors.amount || transferErrors.destination || transferErrors.memo
+  );
+
   // Poll the session while the anchor page is open so status badges and the
   // interactive URL stay current without a manual refresh.
   const polled = useAnchorSession(sessionId);
@@ -105,20 +145,29 @@ export function Sep24Modal({
     : false;
 
   // Reopening always starts from a clean slate — a session started before
-  // would otherwise be resumed without its wallet signature.
+  // would otherwise be resumed without its wallet signature. The asset is
+  // re-seeded too, so a preference changed since the last visit is picked up.
   useEffect(() => {
     if (open) return;
     setSessionId(null);
     setStartedSession(null);
     setStarting(false);
     setSelectedAnchor(null);
-  }, [open]);
+    setTransfer(EMPTY_ANCHOR_TRANSFER_VALUES);
+    setAssetCode(defaultAssetCode ?? preferredAssetCode);
+  }, [open, defaultAssetCode, preferredAssetCode]);
 
   async function handleStart() {
-    if (!chosenAnchor || starting) return;
+    if (!chosenAnchor || starting || transferInvalid) return;
     setStarting(true);
     try {
-      const payload = { assetCode, anchorName: chosenAnchor.name };
+      const payload = buildAnchorTransferPayload({
+        assetCode,
+        anchorName: chosenAnchor.name,
+        amount: transfer.amount,
+        destination: transfer.destination,
+        memo: transfer.memo,
+      });
       const start =
         kind === "deposit"
           ? await api.anchorDeposit(payload)
@@ -316,6 +365,17 @@ export function Sep24Modal({
           </div>
         )}
 
+        {/* Optional prefill — validated before the session is created (#490) */}
+        {!session && (
+          <AnchorTransferFields
+            kind={kind}
+            assetCode={assetCode}
+            values={transfer}
+            errors={transferErrors}
+            onChange={setTransfer}
+          />
+        )}
+
         {/* Interactive step */}
         {session && (
           <div className="space-y-3">
@@ -377,7 +437,7 @@ export function Sep24Modal({
           ) : (
             <Button
               onClick={() => void handleStart()}
-              disabled={!chosenAnchor || starting}
+              disabled={!chosenAnchor || starting || transferInvalid}
               loading={starting}
             >
               {starting ? (

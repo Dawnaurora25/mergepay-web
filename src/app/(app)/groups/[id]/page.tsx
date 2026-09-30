@@ -7,7 +7,7 @@ import { useGroupStore } from "@/lib/group-store";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/button";
-import { Plus, Users, Receipt, ArrowLeft, Search } from "lucide-react";
+import { Plus, Users, Receipt, ArrowLeft, SearchX } from "lucide-react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { AddExpenseDialog } from "@/components/expenses/add-expense-dialog";
@@ -18,9 +18,11 @@ import { ExpenseCard } from "@/components/expenses/expense-card";
 import { GroupActivityFeed } from "@/components/groups/GroupActivityFeed";
 import { GroupBudgetTracker } from "@/components/GroupBudgetTracker";
 import { ExportGroupStatementButton } from "@/components/ExportGroupStatementButton";
-import { GroupExportButton } from "@/components/groups/GroupExportButton";
-import { TreasuryOverview } from "@/components/treasury/TreasuryOverview";
+import { GroupExportMenu } from "@/components/groups/GroupExportMenu";
+import { TreasuryView } from "@/components/treasury/TreasuryView";
+import { MultiPayerOverview } from "@/components/groups/MultiPayerOverview";
 import { ExpenseListFilters, type ExpenseFilterState } from "@/components/expenses/expense-list-filters";
+import { filterExpenses } from "@/lib/expenseFilters";
 import { ListSkeleton, GroupHeaderSkeleton, SkeletonBoundary } from "@/components/ui/skeleton";
 import type { Expense, GroupMember } from "@/lib/types";
 
@@ -44,11 +46,11 @@ export default function GroupDetailPage() {
     if (groupId) setSelectedGroup(groupId);
   }, [groupId, setSelectedGroup]);
 
-  const [filters, setFilters] = useState<ExpenseFilterState>({ search: "", payer: "", status: "", asset: "", pageSize: 10 });
+  const [filters, setFilters] = useState<ExpenseFilterState>({ keyword: "", payer: "", status: "all", assetCode: "", fromDate: "", toDate: "", pageSize: 10 });
   const [page, setPage] = useState(1);
 
   const group = groupQuery.data?.group;
-  const expenses: Expense[] = expensesQuery.data?.expenses ?? [];
+  const expenses: Expense[] = useMemo(() => expensesQuery.data?.expenses ?? [], [expensesQuery.data]);
   const balances = balancesQuery.data?.balances ?? [];
   const settlements = settlementsQuery.data?.settlements ?? [];
   const members: GroupMember[] = groupQuery.data?.members ?? [];
@@ -60,20 +62,13 @@ export default function GroupDetailPage() {
     setPage(1);
   }, []);
 
-  const filteredExpenses = useMemo(() => {
-    const needle = filters.search.trim().toLowerCase();
-    return expenses.filter((expense) => {
-      const matchesSearch =
-        !needle ||
-        expense.title.toLowerCase().includes(needle) ||
-        expense.payer.displayName.toLowerCase().includes(needle);
-      const matchesPayer = !filters.payer || expense.payerUserId === filters.payer;
-      const matchesAsset = !filters.asset || expense.assetCode === filters.asset;
-      const settled = expense.shares.length > 0 && expense.shares.every((share) => share.status === "settled");
-      const matchesStatus = !filters.status || (filters.status === "settled" ? settled : !settled);
-      return matchesSearch && matchesPayer && matchesAsset && matchesStatus;
-    });
-  }, [expenses, filters]);
+  const filteredExpenses = useMemo(
+    () =>
+      filterExpenses(expenses, filters).filter(
+        (expense) => !filters.payer || expense.payerUserId === filters.payer
+      ),
+    [expenses, filters]
+  );
 
   const pageCount = Math.max(1, Math.ceil(filteredExpenses.length / filters.pageSize));
   const visibleExpenses = filteredExpenses.slice((page - 1) * filters.pageSize, page * filters.pageSize);
@@ -86,19 +81,19 @@ export default function GroupDetailPage() {
       settlementsQuery.refetch();
     }}>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <Link href="/dashboard">
             <Button variant="ghost" size="sm">
               <ArrowLeft className="h-4 w-4 mr-1" /> Back to Dashboard
             </Button>
           </Link>
-          <div className="flex items-center gap-2">
-            <GroupExportButton groupId={groupId} expenses={expenses} settlements={settlements} />
+          <div className="flex flex-wrap items-center gap-2">
+            <GroupExportMenu groupId={groupId} groupName={group?.name} expenses={expenses} settlements={settlements} />
             <ExportGroupStatementButton groupId={groupId} expenses={expenses} settlements={settlements} />
             <Button variant="outline" onClick={() => setInviteOpen(true)}>
               <Users className="h-4 w-4 mr-1" /> Invite
             </Button>
-            <Button onClick={() => setAddExpenseOpen(true)}>
+            <Button onClick={() => setAddExpenseOpen(true)} data-testid="group-add-expense">
               <Plus className="h-4 w-4 mr-1" /> Add Expense
             </Button>
           </div>
@@ -110,7 +105,7 @@ export default function GroupDetailPage() {
             skeleton={<GroupHeaderSkeleton />}
           >
             <div className="rounded-2xl border-3 border-ink bg-paper p-6 shadow-brutal">
-              <h1 className="font-display text-2xl uppercase tracking-tight">
+              <h1 className="font-display text-2xl uppercase tracking-tight" data-testid="group-title">
                 {group?.name ?? "Group"}
               </h1>
               {group?.description && (
@@ -152,19 +147,39 @@ export default function GroupDetailPage() {
                   <ListSkeleton rows={5} variant="expense" />
                 )}
                 {expensesQuery.isError && (
-                  <div className="rounded-xl border-2 border-ink bg-flamingo-pale p-4">
-                    <p>Could not load expenses.</p>
-                    <Button size="sm" onClick={() => expensesQuery.refetch()} className="mt-2">
-                      Retry
-                    </Button>
+                  <div className="rounded-xl border-3 border-ink bg-flamingo-pale p-6 shadow-brutal-sm">
+                    <div className="flex items-start gap-3">
+                      <SearchX className="h-6 w-6 text-flamingo mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <h3 className="font-bold text-ink mb-1">Failed to load expenses</h3>
+                        <p className="text-sm text-ink/70 mb-4">
+                          There was a problem fetching the expense list. Please check your connection and try again.
+                        </p>
+                        <Button size="sm" onClick={() => expensesQuery.refetch()}>
+                          Retry
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 )}
                 {!expensesQuery.isPending && !expensesQuery.isError && visibleExpenses.length === 0 && (
-                  <EmptyState
-                    icon={<Search className="h-7 w-7" />}
-                    title="No expenses found"
-                    description={filteredExpenses.length > 0 ? "No expenses match these filters on this page." : "No expenses recorded yet."}
-                  />
+                  expenses.length === 0 ? (
+                    <EmptyState
+                      icon={<Receipt className="h-7 w-7" />}
+                      title="No expenses yet"
+                      description="Add the first expense to start splitting costs with this group."
+                    />
+                  ) : (
+                    <EmptyState
+                      icon={<SearchX className="h-7 w-7" />}
+                      title="No matching expenses"
+                      description={
+                        filteredExpenses.length > 0
+                          ? "No expenses on this page — go back a page."
+                          : "Nothing matches these filters. Try a different keyword, currency, status, or date range, or clear the filters."
+                      }
+                    />
+                  )
                 )}
                 {visibleExpenses.map((expense: Expense) => (
                   <motion.div
@@ -196,6 +211,7 @@ export default function GroupDetailPage() {
           </div>
 
           <div className="space-y-6">
+            <MultiPayerOverview expenses={expenses} />
             <ErrorBoundary>
               <BalancesPanel
                 groupId={groupId}
@@ -205,7 +221,12 @@ export default function GroupDetailPage() {
 
             {group?.treasuryEnabled && (
               <ErrorBoundary>
-                <TreasuryOverview groupId={groupId} />
+                <TreasuryView
+                  groupId={groupId}
+                  treasuryEnabled={group.treasuryEnabled}
+                  requiredSigners={group.treasuryRequiredSigners}
+                  treasuryAccountPublicKey={group.treasuryAccountPublicKey}
+                />
               </ErrorBoundary>
             )}
 

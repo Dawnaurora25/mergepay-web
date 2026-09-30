@@ -35,6 +35,7 @@ import {
   applyOptimisticSettlement,
   buildOptimisticExpense,
   insertOptimisticExpense,
+  removeOptimisticExpense,
 } from "@/lib/optimistic";
 import type {
   BalancesResponse,
@@ -173,7 +174,6 @@ export function useSettleBalanceMutation(groupId: string) {
     },
 
     onMutate: async (newSettlement: CreateSettlementRequest) => {
-      toast.success("Initiating settlement...");
       const balancesKey = qk.balances(groupId);
 
       await Promise.all(
@@ -184,13 +184,10 @@ export function useSettleBalanceMutation(groupId: string) {
 
       const previousQueries = qc.getQueriesData({ queryKey: balancesKey });
       const previousBalances = qc.getQueryData<BalancesResponse>(balancesKey);
+      const previousActivity = qc.getQueryData<GroupActivityResponse>(qk.activity(groupId));
+      const previousExpenses = qc.getQueriesData({ queryKey: qk.expenses(groupId) });
       const payer = currentUser(me.data);
 
-      // Move the funds between the two members straight away: the signed
-      // netBalance flips the payer up by `amount` and the payee down by it,
-      // so "settle up" reads correct before the network answers. The
-      // rollback below (or the invalidation on success) replaces it with
-      // the server's number.
       if (previousBalances && payer) {
         qc.setQueryData<BalancesResponse>(balancesKey, (old) =>
           old
@@ -204,7 +201,7 @@ export function useSettleBalanceMutation(groupId: string) {
         );
       }
 
-      return { previousQueries, previousBalances };
+      return { previousQueries, previousBalances, previousActivity, previousExpenses };
     },
 
     onError: (err, _newSettlement, context) => {
@@ -216,21 +213,80 @@ export function useSettleBalanceMutation(groupId: string) {
       if (context?.previousBalances) {
         qc.setQueryData(qk.balances(groupId), context.previousBalances);
       }
-      // Log the underlying failure for diagnosis (no key material or
-      // private payloads are included) and tell the user what happened.
-      console.error("[mergepay] settlement failed, balances rolled back:", err);
-      toast.error("Settlement failed. Balances rolled back.");
+      if (context?.previousActivity) {
+        qc.setQueryData(qk.activity(groupId), context.previousActivity);
+      }
+      if (context?.previousExpenses) {
+        for (const [queryKey, queryData] of context.previousExpenses) {
+          qc.setQueryData(queryKey, queryData);
+        }
+      }
+      handleApiError(err, "Settlement failed. Balances rolled back.");
     },
 
-    onSuccess: () => {
-      toast.success("Settlement executed successfully");
+    onSuccess: (data) => {
+      const status = data?.settlement?.status ?? "executed successfully";
+      toast.success(`Settlement ${status}`);
     },
 
     onSettled: () => {
+      // `expenseCacheKeys` already covers balances and ledger; invalidating
+      // balances again here would only double the refetch on success.
       invalidate(expenseCacheKeys(groupId));
-      qc.invalidateQueries({ queryKey: qk.balances(groupId) });
       qc.invalidateQueries({ queryKey: qk.activity(groupId) });
       qc.invalidateQueries({ queryKey: qk.history });
+    },
+  });
+}
+
+export function useDeleteExpenseMutation(groupId: string) {
+  const qc = useQueryClient();
+  const invalidate = useInvalidator();
+
+  return useMutation({
+    mutationFn: (expenseId: string): Promise<{ ok: boolean }> =>
+      api.deleteExpense(expenseId),
+
+    onMutate: async (expenseId: string) => {
+      const keys = expenseWriteKeys(groupId);
+
+      // Stop any in-flight refetch from clobbering the removal.
+      await Promise.all(keys.map((queryKey) => qc.cancelQueries({ queryKey })));
+
+      const previousExpenses = qc.getQueriesData({ queryKey: qk.expenses(groupId) });
+      const previousActivity = qc.getQueryData<GroupActivityResponse>(qk.activity(groupId));
+
+      // Remove the expense from both flat and infinite cache shapes
+      // immediately so the card disappears before the network responds.
+      qc.setQueriesData({ queryKey: qk.expenses(groupId) }, (old: unknown) =>
+        removeOptimisticExpense(old, expenseId)
+      );
+
+      return { previousExpenses, previousActivity };
+    },
+
+    onError: (_err, _expenseId, context) => {
+      // Restore every entry we emptied.
+      if (context?.previousExpenses) {
+        for (const [queryKey, queryData] of context.previousExpenses) {
+          qc.setQueryData(queryKey, queryData);
+        }
+      }
+      if (context?.previousActivity) {
+        qc.setQueryData(qk.activity(groupId), context.previousActivity);
+      }
+      toast.error("Could not delete expense. It has been restored.");
+    },
+
+    onSuccess: () => {
+      toast.success("Expense deleted");
+      qc.invalidateQueries({ queryKey: qk.history });
+    },
+
+    onSettled: () => {
+      // Always reconcile with the server's list.
+      invalidate(expenseCacheKeys(groupId));
+      qc.invalidateQueries({ queryKey: qk.activity(groupId) });
     },
   });
 }

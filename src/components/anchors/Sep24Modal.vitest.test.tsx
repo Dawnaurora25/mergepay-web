@@ -1,9 +1,10 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { Sep24Modal } from "./Sep24Modal";
+import { useAssetStore } from "@/lib/asset-store";
 import type { AnchorInfo } from "@/lib/types";
 
 const { sessionQueryMock, toastMock } = vi.hoisted(() => ({
@@ -104,6 +105,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   sessionQueryMock.mockReturnValue({ data: undefined, isLoading: false, isError: false });
   vi.mocked(api.listAnchors).mockResolvedValue({ anchors: ANCHORS } as never);
+});
+
+afterEach(() => {
+  // `act` because a modal left mounted by the previous test still subscribes
+  // to the store while it is reset.
+  act(() => {
+    useAssetStore.getState().resetActiveAsset();
+  });
 });
 
 describe("Sep24Modal (#366)", () => {
@@ -284,6 +293,49 @@ describe("Sep24Modal (#366)", () => {
     ).toBeInTheDocument();
   });
 
+  it("gates the start button on the validated transfer prefill (#490)", async () => {
+    renderModal();
+    await screen.findByText("TestAnchor");
+
+    const start = screen.getByRole("button", { name: /start deposit/i });
+    const amount = screen.getByLabelText(/^amount/i);
+    const destination = screen.getByLabelText(/^destination account/i);
+
+    // Blank fields are valid: the anchor collects whatever is missing.
+    await waitFor(() => expect(start).toBeEnabled());
+
+    // An amount the anchor would reject is reported inline and blocks submit.
+    fireEvent.change(amount, { target: { value: "0" } });
+    expect(screen.getByText(/greater than zero/i)).toBeInTheDocument();
+    expect(start).toBeDisabled();
+
+    // So is a destination that is not a checksum-valid Stellar account.
+    fireEvent.change(amount, { target: { value: "25" } });
+    fireEvent.change(destination, { target: { value: "not-a-key" } });
+    expect(
+      screen.getByText(/valid 56-character Stellar public key/i)
+    ).toBeInTheDocument();
+    expect(start).toBeDisabled();
+
+    // Once the prefill is valid, the request carries it to the anchor.
+    fireEvent.change(destination, { target: { value: "" } });
+    await waitFor(() => expect(start).toBeEnabled());
+
+    vi.mocked(api.anchorDeposit).mockImplementation(
+      () => new Promise(() => undefined)
+    );
+    fireEvent.click(start);
+
+    await waitFor(() =>
+      expect(api.anchorDeposit).toHaveBeenCalledWith({
+        assetCode: "XLM",
+        anchorName: "TestAnchor",
+        amount: "25",
+      })
+    );
+    expect(start).toBeDisabled();
+  });
+
   it("polls the session for status updates while open", async () => {
     sessionQueryMock.mockImplementation((id: string | null) =>
       id
@@ -307,5 +359,64 @@ describe("Sep24Modal (#366)", () => {
 
     await waitFor(() => expect(sessionQueryMock).toHaveBeenCalledWith("sess-1"));
     expect(await screen.findByText("pending external")).toBeInTheDocument();
+  });
+});
+
+describe("persisted currency preference (#486)", () => {
+  it("opens on the stored preference when the caller pins no asset", async () => {
+    act(() => {
+      useAssetStore.getState().setActiveAsset({ code: "USDC", issuer: "GISSUER" });
+    });
+
+
+    renderModal();
+
+    expect(
+      await screen.findByText("UsdcAnchor", {}, { timeout: 3000 })
+    ).toBeInTheDocument();
+    expect(screen.queryByText("TestAnchor")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "USDC" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByText(/^deposit usdc$/i)).toBeInTheDocument();
+  });
+
+  it("lets an explicit defaultAssetCode win over the stored preference", () => {
+    act(() => {
+      useAssetStore.getState().setActiveAsset({ code: "USDC", issuer: "GISSUER" });
+    });
+
+
+    renderModal({ defaultAssetCode: "XLM" });
+
+    expect(screen.getByRole("button", { name: "XLM" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: "USDC" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+  });
+
+  it("picks up a preference changed while the modal was closed", async () => {
+    const { rerender } = render(
+      <Sep24Modal open={false} onClose={() => {}} />,
+      { wrapper: createWrapper() }
+    );
+
+    act(() => {
+      useAssetStore.getState().setActiveAsset({ code: "USDC", issuer: "GISSUER" });
+    });
+    rerender(<Sep24Modal open onClose={() => {}} />);
+
+    expect(
+      await screen.findByText("UsdcAnchor", {}, { timeout: 3000 })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "USDC" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   });
 });
