@@ -137,6 +137,10 @@ const EMPTY_LEDGER = { entries: [], nextCursor: null };
 async function mockFreighter(page: Page): Promise<void> {
   await page.addInitScript(
     ({ publicKey, networkPassphrase }) => {
+      // freighter-api checks this global first and short-circuits
+      // `isConnected()` without a postMessage round-trip.
+      (window as unknown as Record<string, unknown>)["freighter"] = true;
+
       window.addEventListener("message", (event) => {
         const data = event.data as {
           source?: string;
@@ -147,38 +151,51 @@ async function mockFreighter(page: Page): Promise<void> {
         if (!data || data.source !== "FREIGHTER_EXTERNAL_MSG_REQUEST") return;
 
         const { messageId, type } = data;
-        let payload: Record<string, unknown> = {};
-        switch (type) {
-          case "REQUEST_CONNECTION_STATUS":
-            payload = { isConnected: true };
-            break;
-          case "REQUEST_ACCESS":
-          case "REQUEST_PUBLIC_KEY":
-            payload = { publicKey };
-            break;
-          case "REQUEST_NETWORK":
-            payload = { network: "TESTNET" };
-            break;
-          case "REQUEST_NETWORK_DETAILS":
-            payload = { network: "TESTNET", networkPassphrase };
-            break;
-          case "SUBMIT_TRANSACTION":
-            payload = { signedTransaction: String(data.transactionXdr ?? "") };
-            break;
-          default:
-            return;
-        }
-
         // The library matches responses on `messagedId` (sic) with the
         // response fields at the top level.
-        window.postMessage(
-          {
-            source: "FREIGHTER_EXTERNAL_MSG_RESPONSE",
-            messagedId: messageId,
-            ...payload,
-          },
-          "*"
-        );
+        const reply = (payload: Record<string, unknown>) =>
+          window.postMessage(
+            {
+              source: "FREIGHTER_EXTERNAL_MSG_RESPONSE",
+              messagedId: messageId,
+              ...payload,
+            },
+            "*"
+          );
+
+        switch (type) {
+          case "REQUEST_CONNECTION_STATUS":
+            return reply({ isConnected: true });
+          case "REQUEST_ALLOWED":
+          case "REQUEST_ALLOWED_STATUS":
+          case "SET_ALLOWED_STATUS":
+            return reply({ isAllowed: true });
+          case "REQUEST_ACCESS":
+          case "REQUEST_PUBLIC_KEY":
+            return reply({ publicKey });
+          case "REQUEST_NETWORK":
+          case "REQUEST_NETWORK_DETAILS":
+            return reply({
+              networkDetails: {
+                network: "TESTNET",
+                networkName: "Testnet",
+                networkUrl: "https://horizon-testnet.stellar.org",
+                networkPassphrase,
+              },
+            });
+          case "SUBMIT_TRANSACTION":
+            return reply({
+              signedTransaction: String(data.transactionXdr ?? ""),
+              signerAddress: publicKey,
+            });
+          default:
+            return reply({
+              apiError: {
+                code: -1,
+                message: `Unhandled Freighter request in e2e: ${String(type)}`,
+              },
+            });
+        }
       });
     },
     { publicKey: CURRENT_USER.stellarPublicKey, networkPassphrase: NETWORK_PASSPHRASE }
@@ -273,35 +290,36 @@ test.describe("Group creation and expense splitting flow", () => {
 
     // 1. Sign in through the mocked wallet + SEP-10 handshake.
     await page.goto("/login");
-    await page.getByRole("button", { name: /connect freighter/i }).click();
+    await page.getByTestId("login-connect").click();
     await page.waitForURL(/\/dashboard/);
 
-    // 2. Start from the (empty) group list.
-    await page.goto("/groups");
+    // 2. Start from the (empty) group list. Client-side navigation only: the
+    // bearer token is memory-only (#543), so a full page load would drop the
+    // session and the guard would bounce back to /login.
+    await page.locator("aside").getByRole("link", { name: "Groups" }).click();
+    await expect(page).toHaveURL(/\/groups$/);
     await expect(page.getByRole("heading", { name: /your groups/i })).toBeVisible();
 
     // 3. Create a group.
-    await page.getByRole("button", { name: /new group/i }).click();
-    const createDialog = page.getByRole("dialog");
-    await expect(createDialog.getByText(/new group/i)).toBeVisible();
+    await page.getByTestId("groups-create").click();
+    const createDialog = page.getByRole("dialog", { name: /new group/i });
+    await expect(createDialog).toBeVisible();
     await createDialog.getByLabel(/group name/i).fill(GROUP.name);
-    await createDialog.getByRole("button", { name: /create group/i }).click();
+    await page.getByTestId("create-group-confirm").click();
 
     // Lands on the new group's detail page.
-    await page.waitForURL(new RegExp(`/groups/${GROUP.id}$`));
+    await page.waitForURL(new RegExp(`/groups/${GROUP.id}(?:\\?.*)?$`));
     await expect(
       page.getByRole("heading", { name: GROUP.name })
     ).toBeVisible();
 
     // 4. Add a shared expense.
-    await page.getByRole("button", { name: /add expense/i }).first().click();
-    const expenseDialog = page.getByRole("dialog");
-    await expect(
-      expenseDialog.getByRole("heading", { name: /add expense/i })
-    ).toBeVisible();
+    await page.getByTestId("group-add-expense").click();
+    const expenseDialog = page.getByRole("dialog", { name: /add expense/i });
+    await expect(expenseDialog).toBeVisible();
     await expenseDialog.getByLabel(/^title$/i).fill(EXPENSE.title);
     await expenseDialog.getByLabel(/^amount$/i).fill(EXPENSE.amount);
-    await expenseDialog.getByRole("button", { name: /^add expense$/i }).click();
+    await page.getByTestId("add-expense-confirm").click();
 
     // The expense is listed once the mutation settles and the list refetches.
     await expect(page.getByText(EXPENSE.title).first()).toBeVisible();
