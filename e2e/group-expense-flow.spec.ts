@@ -359,7 +359,9 @@ test.describe("Group creation and expense splitting flow", () => {
     await expect(page.getByText(EXPENSE.title).first()).toBeVisible();
 
     // 5. The split is reflected in the member balances.
-    await expect(page.getByText(/net balances/i)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Net balances", exact: true })
+    ).toBeVisible();
     await expect(page.getByText(CURRENT_USER.displayName).first()).toBeVisible();
     await expect(page.getByText(PEER_USER.displayName).first()).toBeVisible();
     // Payer is owed 50 XLM; the other member owes 50 XLM.
